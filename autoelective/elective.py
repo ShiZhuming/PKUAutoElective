@@ -3,13 +3,14 @@
 # filename: elective.py
 # modified: 2019-09-10
 
-__all__ = ["ElectiveClient"]
-
+import time
+import string
 import random
+from urllib.parse import quote
 from .client import BaseClient
-from .hook import *
-from .const import USER_AGENT, DEFAULT_CLIENT_TIMEOUT, ElectiveLinks
-
+from .hook import get_hooks, debug_dump_request, debug_print_request, check_status_code, with_etree,\
+    check_elective_title, check_elective_tips
+from .const import ElectiveURL
 
 _hooks_check_status_code = get_hooks(
     # debug_dump_request,
@@ -34,8 +35,7 @@ _hooks_check_tips = get_hooks(
     check_elective_tips,
 )
 
-
-def _get_headers_with_referer(kwargs, referer=ElectiveLinks.HelpController):
+def _get_headers_with_referer(kwargs, referer=ElectiveURL.HelpController):
     headers = kwargs.pop("headers", {})
     headers["Referer"] = referer
     return headers
@@ -43,50 +43,66 @@ def _get_headers_with_referer(kwargs, referer=ElectiveLinks.HelpController):
 
 class ElectiveClient(BaseClient):
 
-    HEADERS = {
-        # "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3",
-        # "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-        "Host": ElectiveLinks.Host,
+    default_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Host": ElectiveURL.Host,
         "Upgrade-Insecure-Requests": "1",
-        "User-Agent": USER_AGENT,
+        "Connection": "keep-alive",
     }
 
     def __init__(self, id, **kwargs):
         super().__init__(**kwargs)
         self._id = id
+        self._expired_time = -1
 
     @property
     def id(self):
         return self._id
 
     @property
-    def hasLogined(self):
+    def expired_time(self):
+        return self._expired_time
+
+    @property
+    def is_expired(self):
+        if self._expired_time == -1:
+            return False
+        return int(time.time()) > self._expired_time
+
+    @property
+    def has_logined(self):
         return len(self._session.cookies) > 0
 
+    def set_expired_time(self, expired_time):
+        self._expired_time = expired_time
 
     def sso_login(self, token, **kwargs):
+        dummy_cookie = "JSESSIONID=%s!%d" % (
+            ''.join(random.choice(string.digits + string.ascii_letters) for _ in range(52)),
+            random.randint(184960435, 1984960435),
+        )
+        headers = kwargs.pop("headers", {}) # no Referer
+        headers["Cookie"] = dummy_cookie  # 必须要指定一个 Cookie 否则报 101 status_code
         r = self._get(
-            url=ElectiveLinks.SSOLogin,
+            url=ElectiveURL.SSOLogin,
             params={
-                "rand": str(random.random()),
+                "_rand": str(random.random()),
                 "token": token,
             },
-            # 必须要随便指定一个 Cookie 否则无法会报 101 status_code
-            headers={
-                "Cookie": "JSESSIONID=TH9sd1HBgw0k3RTFxMHKmWpPp4bMJ5FnTGn7WmvyH2JmTqNGgxpS!1984960435",
-            },
+            headers=headers,
             hooks=_hooks_check_title,
             **kwargs,
-        ) # 无 Referer
+        )
         return r
 
     def sso_login_dual_degree(self, sida, sttp, referer, **kwargs):
         assert len(sida) == 32
         assert sttp in ("bzx", "bfx")
-        headers = kwargs.pop("headers", {})
-        headers["Referer"] = referer # 为之前登录的链接
+        headers = kwargs.pop("headers", {}) # no Referer
         r = self._get(
-            url=ElectiveLinks.SSOLoginDualDegree,
+            url=ElectiveURL.SSOLogin,
             params={
                 "sida": sida,
                 "sttp": sttp,
@@ -100,7 +116,7 @@ class ElectiveClient(BaseClient):
     def logout(self, **kwargs):
         headers = _get_headers_with_referer(kwargs)
         r = self._get(
-            url=ElectiveLinks.Logout,
+            url=ElectiveURL.Logout,
             headers=headers,
             hooks=_hooks_check_title,
             **kwargs,
@@ -110,39 +126,17 @@ class ElectiveClient(BaseClient):
     def get_HelpController(self, **kwargs):
         """ 帮助 """
         r = self._get(
-            url=ElectiveLinks.HelpController,
+            url=ElectiveURL.HelpController,
             hooks=_hooks_check_title,
             **kwargs,
         ) # 无 Referer
-        return r
-
-    def get_PlanController(self, **kwargs):
-        """ 选课计划 """
-        headers = _get_headers_with_referer(kwargs)
-        r = self._get(
-            url=ElectiveLinks.ElectivePlanController,
-            headers=headers,
-            hooks=_hooks_check_title,
-            **kwargs,
-        )
-        return r
-
-    def get_WorkController(self, **kwargs):
-        """ 预选 """
-        headers = _get_headers_with_referer(kwargs)
-        r = self._get(
-            url=ElectiveLinks.ElectiveWorkController,
-            headers=headers,
-            hooks=_hooks_check_title,
-            **kwargs,
-        )
         return r
 
     def get_ShowResults(self, **kwargs):
         """ 选课结果 """
         headers = _get_headers_with_referer(kwargs)
         r = self._get(
-            url=ElectiveLinks.ShowResults,
+            url=ElectiveURL.ShowResults,
             headers=headers,
             hooks=_hooks_check_title,
             **kwargs,
@@ -152,35 +146,26 @@ class ElectiveClient(BaseClient):
     def get_SupplyCancel(self, **kwargs):
         """ 补退选 """
         headers = _get_headers_with_referer(kwargs)
+        headers["Cache-Control"] = "max-age=0"
         r = self._get(
-            url=ElectiveLinks.SupplyCancel,
+            url=ElectiveURL.SupplyCancel,
             headers=headers,
             hooks=_hooks_check_title,
             **kwargs,
         )
         return r
 
-    def get_supplement(self, page=1, **kwargs): # 辅双第二页，通过输入数字 2 进行跳转
+    def get_supplement(self, page=1, **kwargs):
+        """ 补退选（第二页及以后） """
         assert page > 0
-        headers = _get_headers_with_referer(kwargs, ElectiveLinks.SupplyCancel)
+        headers = _get_headers_with_referer(kwargs, ElectiveURL.SupplyCancel)
+        headers["Cache-Control"] = "max-age=0"
         r = self._get(
-            url=ElectiveLinks.Supplement + "?netui_row=electResultLisGrid%3B0",
+            url=ElectiveURL.Supplement,
             params={
-                # "netui_row": "electResultLisGrid;0", # leave this field in url for duplicate key 'netui_row'
-                "netui_row": "electableListGrid;%s" % ( (page - 1) * 50 ),
-                "conflictCourse": "",
+                "netui_pagesize": "electableListGrid;20",
+                "netui_row": "electableListGrid;%s" % ( (page - 1) * 20 ),
             },
-            headers=headers,
-            hooks=_hooks_check_title,
-            **kwargs,
-        )
-        return r
-
-    def get_SupplyOnly(self, **kwargs):
-        """ 补选 """
-        headers = _get_headers_with_referer(kwargs)
-        r = self._get(
-            url=ElectiveLinks.SupplyOnly,
             headers=headers,
             hooks=_hooks_check_title,
             **kwargs,
@@ -189,9 +174,9 @@ class ElectiveClient(BaseClient):
 
     def get_DrawServlet(self, **kwargs):
         """ 获得验证码 """
-        headers = _get_headers_with_referer(kwargs, ElectiveLinks.SupplyCancel)
+        headers = _get_headers_with_referer(kwargs, ElectiveURL.SupplyCancel)
         r = self._get(
-            url=ElectiveLinks.DrawServlet,
+            url=ElectiveURL.DrawServlet,
             params={
                 "Rand": str(random.random() * 10000),
             },
@@ -201,12 +186,18 @@ class ElectiveClient(BaseClient):
         )
         return r
 
-    def get_Validate(self, captcha, **kwargs):
-        headers = _get_headers_with_referer(kwargs, ElectiveLinks.SupplyCancel)
+    def get_Validate(self, username, code, **kwargs):
+        """ 验证用户输入的验证码 """
+        headers = _get_headers_with_referer(kwargs, ElectiveURL.SupplyCancel)
+        headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+        headers["Accept-Encoding"] = "gzip, deflate, br"
+        headers["Accept-Language"] = "en-US,en;q=0.9"
+        headers["X-Requested-With"] = "XMLHttpRequest"
         r = self._post(
-            url=ElectiveLinks.Validate,
+            url=ElectiveURL.Validate,
             data={
-                "validCode": captcha,
+                "xh": username,
+                "validCode": code,
             },
             headers=headers,
             hooks=_hooks_check_status_code,
@@ -215,9 +206,18 @@ class ElectiveClient(BaseClient):
         return r
 
     def get_ElectSupplement(self, href, **kwargs):
-        headers = _get_headers_with_referer(kwargs, ElectiveLinks.SupplyCancel)
+        """ 补选一门课 """
+
+        if "/supplement/electSupplement.do" not in href:
+            raise RuntimeError(
+                "If %r is really a 'electSupplement' href, it would certainly contains '/supplement/electSupplement.do'. "
+                "If you see this error, that means maybe something terrible will happpen ! Please raise an issue at "
+                "https://github.com/zhongxinghong/PKUAutoElective/issues" % href
+            )
+
+        headers = _get_headers_with_referer(kwargs, ElectiveURL.SupplyCancel)
         r = self._get(
-            url="http://{host}{href}".format(host=ElectiveLinks.Host, href=href),
+            url="%s://%s%s" % (ElectiveURL.Scheme, ElectiveURL.Host, href),
             headers=headers,
             hooks=_hooks_check_tips,
             **kwargs,

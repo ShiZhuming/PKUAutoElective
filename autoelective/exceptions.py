@@ -8,13 +8,13 @@ __all__ = [
 "AutoElectiveException",
 
     "UserInputException",
-        "NotInCoursePlanException",
 
     "AutoElectiveClientException",
 
         "StatusCodeError",
         "ServerError",
         "OperationFailedError",
+        "UnexceptedHTMLFormat",
 
         "IAAAException",
             "IAAANotSuccessError",
@@ -32,6 +32,7 @@ __all__ = [
                 "CaptchaError",
                 "NoAuthInfoError",
                 "SharedSessionError",
+                "NotAgreedToSelectionAgreement",
 
             "TipsException",
                 "ElectionSuccess",
@@ -41,9 +42,11 @@ __all__ = [
                 "ElectionPermissionError",
                 "ElectionFailedError",
                 "CreditsLimitedError",
-                "MutuallyExclusiveCourseError",
+                "MutexCourseError",
                 "MultiEnglishCourseError",
                 "ExamTimeConflictError",
+                "QuotaLimitedError",
+                "MultiPECourseError",
 
 ]
 
@@ -51,11 +54,8 @@ __all__ = [
 class AutoElectiveException(Exception):
     """ Abstract Exception for AutoElective """
 
-class UserInputException(AutoElectiveException):
+class UserInputException(AutoElectiveException, ValueError):
     """ 由于用户的输入数据不当而引发的错误 """
-
-class NotInCoursePlanException(UserInputException):
-    """ csv 内指定的课程不在选课计划内 """
 
 
 class AutoElectiveClientException(AutoElectiveException):
@@ -96,6 +96,10 @@ class ServerError(AutoElectiveClientException):
 class OperationFailedError(AutoElectiveClientException):
     code = 103
     desc = r"some operations failed for unknown reasons"
+
+class UnexceptedHTMLFormat(AutoElectiveClientException):
+    code = 104
+    desc = r"unable to parse HTML content"
 
 
 class IAAAException(AutoElectiveClientException):
@@ -200,7 +204,7 @@ class CreditsLimitedError(TipsException):
     code = 327
     desc = "您本学期所选课程的总学分已经超过规定学分上限。"
 
-class MutuallyExclusiveCourseError(TipsException):
+class MutexCourseError(TipsException):
     code = 328
     desc = "只能选其一门。"
 
@@ -211,3 +215,11 @@ class MultiEnglishCourseError(TipsException):
 class ExamTimeConflictError(TipsException):
     code = 330
     desc = "考试时间冲突"
+
+class QuotaLimitedError(TipsException):
+    code = 331
+    desc = "该课程选课人数已满。"
+
+class MultiPECourseError(TimeoutError):
+    code = 332
+    desc = "学校规定每学期只能修一门体育课。"
